@@ -1,0 +1,80 @@
+#!/usr/bin/perl
+###################################################
+#author:wangxuejin
+#time:2013-9-26
+#Purpose:create for build each dir of android project without eclipse.
+#2013-9-26,generate fisrt version.
+###################################################
+use strict;
+use warnings;
+use POSIX qw(strftime);
+my $begin_time = time;
+
+my $out_dir="out";
+my @dirList;
+my $divider_tag="############";
+my $cmd_value = 0;
+
+###################################################
+foreach (@ARGV)
+{
+	if ($_=~/-dir\s*=\s*(\S*)/){
+		my $all_dir = $1;
+		@dirList=split(/\,/,$all_dir);
+	}
+}
+print "$divider_tag Build All CHANGED DIR @dirList !\n";    
+
+if (-d $out_dir)
+{
+   qx(rm -fr $out_dir);
+}
+qx(mkdir $out_dir);
+
+foreach(@dirList)
+{
+	my @dir_num=split(/\:/,$_);
+	my $dir=$dir_num[0];
+	my $buildnum=$dir_num[1];
+	my $full_dir = "$out_dir/$dir";
+	unless (-d $full_dir)
+	{
+		qx(mkdir $full_dir -p);
+	}
+
+	print "$divider_tag Start build dir $dir\n";
+	my $cmd_for_dir = "cd $dir;buildapp @ARGV -bn=$buildnum -n=$dir";
+	print $cmd_for_dir;print "\n";
+	$cmd_value = system($cmd_for_dir);
+	system("ls");
+	if ($cmd_value > 0){
+		print "$divider_tag Failed build dir $dir $cmd_value\n";
+		last;
+	}else{
+		qx(cd $dir;cp $out_dir/* ../$full_dir -r;cd ..);
+	}
+	print "$divider_tag End build dir $dir\n";
+}
+my $end_time = time;
+my $use_time = $end_time - $begin_time;
+my $second = $use_time % 60;
+my $minute = int($use_time / 60);
+my $use_time_str;
+if ($minute > 0){
+	$use_time_str = $minute."Minute".$second."Second";
+}
+else{
+	$use_time_str = $second."S";
+}
+#print "$divider_tag Build All CHANGED DIR @dirList USE Time:$use_time_str!\n";
+
+if($cmd_value!=0)
+{
+	print "$divider_tag Build Failed All CHANGED DIR @dirList USE Time:$use_time_str!\n";
+	exit($cmd_value >> 8);
+}
+else
+{
+	print "$divider_tag Build successful All CHANGED DIR @dirList USE Time:$use_time_str!\n";
+	exit($cmd_value);
+}

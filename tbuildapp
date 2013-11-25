@@ -1,0 +1,1465 @@
+#!/usr/bin/perl
+###################################################
+#author:wangxuejin
+#time:2011-10-31
+#Purpose:create for build android project without eclipse.
+#2011-10-31,generate fisrt version.
+#2011-11-11,add support aidl parse.
+#2011-11-16,add check error.
+#2012-10-30,remove some warning.
+#2012-12-04,support auto build.
+#2012-12-07,support android sdk version.
+#2012-12-14,support lib project.
+#2012-12-17,support order static lib.
+#2012-12-17,support product_locales & auto overlay.
+#2012-12-31,modify google origin can't suprort product_locales to R.java.
+#2013-1-8,support generate BuildConfig.java.
+#2013-4-1,support zipalign the signed apk.
+#2013-4-3,Not strictly check .9.png.
+#2013-4-26,support simpe project config.
+#2013-5-13,support remove projectname from apkname &versionname
+#2013-6-9,support off network version.
+#2013-8-22,support overlay AndroidManifest.xml
+#2013-9-10,support to auto add suffix Beta/RTM
+#2013-9-26,support to auto read channel.info and generate all channel version.
+#2013-9-30,get packgeName&versionname&versioncode from LibXML.
+#2013-10-9,support overlay assets by copy mode.
+#2013-10-24,support build arm/x86 single.
+#2013-11-15,Add java resources carried to apk from static Java libraries.
+#-product/-p  一套代码编译出哪几个项目.-p可以重复多个
+#-autobuild/-a 是否本地采用脚本模拟autobuild编译 true/false
+#-debug/-d  是否打开打印信息 true/false
+#-key/-k   签名key类型,Key type: platform releasekey media shared 
+#-name/-n  应用程序名称
+#-sdk/-s android-sdk版本
+#"zh_CN,en_US,zh_TW,xxhdpi,xhdpi,ldpi,hdpi,mdpi,nodpi";
+###################################################
+use strict;
+use warnings;
+use XML::LibXML;
+use POSIX qw(strftime);
+my $begin_time = time;
+
+#Pls set the next four variable first.
+#my $JAVA_HOME="/opt/1.6.0_23-ubuntu-10.04/x86_64";
+my $JAVA_HOME=$ENV{"JAVA_HOME"};
+if (!defined($JAVA_HOME))
+{
+	print "!!!!Set JAVA_HOME to your env!!!\n";
+	$JAVA_HOME="/opt/1.6.0_23-ubuntu-10.04/x86_64";
+	print "Now Set JAVA_HOME=$JAVA_HOME\n";
+	exit 1001;
+}
+
+#my $ANDROID_HOME="/opt/android-sdk-linux";
+my $ANDROID_HOME=$ENV{"ANDROID_HOME"};
+if (!defined($ANDROID_HOME))
+{
+	print "!!!!Set ANDROID_HOME to your env!!!\n";
+	$ANDROID_HOME="/opt/android-sdk-linux";	
+	print "Now Set ANDROID_HOME=$ANDROID_HOME\n";
+	exit 1002;
+}
+
+my $cmdAutoBuild=0;
+my $android_sdk_version=14;
+my $APK_NAME_ORIGN="LenovoApp";
+my $use_key="releasekey";
+my $debug="true";#set true,use print. set false, shutdown print info.
+my @PROJECT;
+my $defaultProject="AllProject";
+my $cmd_value=0;#set cmd value to judge if not success.
+my $def_debug=0;
+my $framework_name="framework-classes";
+my $sec_framework_name="sec-framework-classes";
+my @order_libs;
+my $static_lib="libs";
+my $dynamic_lib="dynamic_lib";
+my $sign_java_key="false";
+my $origin_product_locales="zh_CN,en_US,zh_TW,xxhdpi,xhdpi,ldpi,hdpi,mdpi,nodpi";
+##add for simpe pram.
+my $origin_product_language_china="zh_CN,en_US,zh_TW";
+my  $origin_product_language_oversea="zh_HK,en_US,fr_FR,it_IT,es_ES,de_DE,nl_NL,cs_CZ,pl_PL,ja_JP,zh_TW,zh_CN,ru_RU,ko_KR,nb_NO,es_US,da_DK,el_GR,tr_TR,pt_PT,pt_BR,rm_CH,sv_SE,bg_BG,ca_ES,en_GB,fi_FI,hi_IN,hr_HR,hu_HU,in_ID,iw_IL,lt_LT,lv_LV,ro_RO,sk_SK,sl_SI,sr_RS,uk_UA,vi_VN,tl_PH,ar_EG,fa_IR,th_TH,sw_TZ,ms_MY,af_ZA,zu_ZA,am_ET,hi_IN,vi";
+my $origin_product_dpi_full="xxhdpi,xhdpi,ldpi,hdpi,mdpi,nodpi";
+my @all_dpi_list=qw/xxhdpi xhdpi ldpi hdpi mdpi nodpi/;
+my $origin_product_dpi_needadd="ldpi,mdpi,nodpi";
+
+my @project_locales_list;
+my @project_network_list;
+my @project_arch_list;#values from arm/x86/arch_all, default value is arch_all
+my $product_locales = $origin_product_locales;
+my $suffix_project = 1;
+my $support_net = 1;
+
+my @channel_project_list;
+my $support_channel = 0;
+my $build_num=0;
+
+my $divider_tag="############";
+############Add under##############
+&handle_cmdOption();
+
+if ($build_num == 0){
+	my $build_num_path="_buildnum";
+	if (-e $build_num_path)
+	{
+		$build_num = qx(cat $build_num_path);
+		chomp($build_num);
+	}
+}
+
+my $APK_NAME=$APK_NAME_ORIGN;
+my $my_framework_jar="$dynamic_lib/$framework_name.jar";
+unless (-e $my_framework_jar)
+{
+	$my_framework_jar="";
+}
+my $second_framework_jar = "$dynamic_lib/$sec_framework_name.jar";
+unless (-e $second_framework_jar)
+{
+	$second_framework_jar="";
+}
+
+my $JAVA_HOME_BIN="$JAVA_HOME/bin";
+my $JAVAC="$JAVA_HOME_BIN/javac";
+my $DX="$ANDROID_HOME/platform-tools/dx";
+my $AAPT="$ANDROID_HOME/platform-tools/aapt";
+my $APK_BUILD="$ANDROID_HOME/tools/apkbuilder";
+my $ANDRROID_SDK="$ANDROID_HOME/platforms/android-$android_sdk_version/android.jar";
+my $aidl="$ANDROID_HOME/platform-tools/aidl";
+my $zipalign="$ANDROID_HOME/tools/zipalign";
+my $framework_aidl="$ANDROID_HOME/platforms/android-$android_sdk_version/framework.aidl";
+my $proguard_jar="$ANDROID_HOME/tools/proguard/lib/proguard.jar";
+my $project_prop="project.properties";
+my $proguard_config="proguard.cfg";
+my @lib_project_list;
+
+my $channel_info="channel.info";
+
+#set sign key
+my $apk_key="androidnetgear";  
+my $KeyTool="$JAVA_HOME_BIN/keytool";  
+my $Jarsigner="$JAVA_HOME_BIN/jarsigner";  
+my $key_name="key.keystore";
+my $java_key_out="java_key_signd";
+
+#set project sign key tools
+my $sign_jar="signtools/jar/signapk.jar";
+my $key_path="signtools/key";
+my $projet_key_out="project_key_signd";
+
+#get your current application path
+my $WORK_SPACE=qx(pwd);
+#print "current dir is $WORK_SPACE\n";
+my $ASSETS="assets";
+my $BIN="pro_bin";
+my $BIN_CLASS_PATH="$BIN/classes";
+my $GEN="gen";
+my $RES="res";
+my $SRC="src";
+my $NATIVE_LIB="libs";
+my @bin_src=("gen","src");
+my $OVERLAY="overlay";
+my $MANIFEST="AndroidManifest.xml";
+my $RES_ARSC="$BIN/resources.ap_";
+my $CALSS_NAME="classes.dex";
+my $CLASS_DEX="$BIN/$CALSS_NAME";
+my $lenovoAppFeature_path="src/com/lenovo/appfeature/LenovoAppFeature.java";
+my $out_dir="out";
+my $out_temp_dir="out_temp";
+my $jar_cls="$BIN/classes.jar";
+my $jar_bin="$out_temp_dir/temp.jar";
+my $jar_proguard="$out_temp_dir/proguard.jar";
+my $overlay_res="";
+
+my @need_handle_dpi_list=("drawable","layout","menu","values");#,"mipmap"
+my @need_remove_dpi;
+my $tm_res_dir="tm_res";
+my $package_name;
+my $tm_manifest="tm_manifest";
+my $project_idex=0;
+my $bLibProject=0;
+my $bProguard=0;
+
+$package_name=&getPkgNameFromManifest();
+if ($package_name eq "com.lenovo.scg"){
+	&app_print("call autoCreateImage for SCG\n");
+	system("res_ex/autoCreateImage");
+}
+
+sub build_main(){
+	#get all src resource.
+	&getAllSrcPath();
+
+	if (-d $out_dir)
+	{
+	   qx(rm -fr $out_dir);
+	}
+	qx(mkdir $out_dir);
+		
+	#check assets.
+	unless (-d $ASSETS)
+	{
+		qx(mkdir $ASSETS);
+	}
+
+	#cp AndroidManifest.xml to tm_manifest
+	unless (-d $tm_manifest)
+	{
+		qx(mkdir $tm_manifest);
+		qx(cp $MANIFEST $tm_manifest/ -rf);
+		qx(cp $NATIVE_LIB $tm_manifest/$NATIVE_LIB -rf);
+	}
+
+	&app_print("project_locales_list @project_locales_list\n");
+	&app_print("ALL Projects = @PROJECT\n");
+	#system("ls");
+
+	#Need to proguard. 
+	my @lib_project_list_str;
+	if (-e $project_prop)
+	{
+		open(FILES,$project_prop);
+		my @file=<FILES>;
+		my $file;
+		foreach $file (@file)
+		{
+			#print $file;
+			if ($file=~/^proguard.config=proguard.cfg/)
+			{
+				$proguard_config = "proguard.cfg";
+				$bProguard=1;
+				#last;
+			}
+			elsif ($file=~/^proguard.config=proguard.flags/)
+			{
+				$proguard_config = "proguard.flags";
+				$bProguard=1;
+				#last;
+			}
+			elsif ($file=~/^android.library.reference/){
+				push(@lib_project_list_str,$file);
+			}
+		}
+		close(FILES);
+	}
+	
+	if (@lib_project_list_str > 0){
+		$bLibProject=1;
+		my $count_lib=0;
+		foreach (@lib_project_list_str){
+			$count_lib++;
+			chomp($_);
+			if ($_=~/^android.library.reference.$count_lib\s*=\s*(\S*)/)
+			{
+				push(@lib_project_list,$1);
+			}
+		}
+	}
+
+	my @all_channel;
+	if ($support_channel == 1){
+		if (-e $channel_info)
+		{
+			&app_print("$divider_tag Need channel project @channel_project_list\n");
+			open(FILES,$channel_info);
+			@all_channel=<FILES>;
+			if (@all_channel == 0){
+				&app_print("All channel.info count is 0\n");
+			}else{
+				&app_print("All channel.info is @all_channel");
+			}
+			chomp(@all_channel);
+			close(FILES);
+		}
+	}
+
+	my $each_project;
+	my $target_arch="arch_all";
+	foreach $each_project (@PROJECT)
+	{
+		if (@project_locales_list > 0){
+			$product_locales=$project_locales_list[$project_idex];
+		}
+	
+		if (@project_arch_list > 0){
+			$target_arch=$project_arch_list[$project_idex];
+		}
+		
+		#handler target_arch
+		qx(cp $tm_manifest/$NATIVE_LIB/* $NATIVE_LIB/ -rf);
+		if($target_arch eq "armeabi"){
+			qx(rm "$NATIVE_LIB/x86" -rf);
+		}elsif($target_arch eq "x86"){
+			qx(rm "$NATIVE_LIB/armeabi" -rf);
+		}elsif($target_arch eq "arch_all"){
+			##nothing to do.
+		}
+
+		#channelinfo
+		my $use_channel = &handler_channel_info($each_project);
+		&app_print("use_channel = $use_channel for $each_project project\n");		
+		if ($use_channel == 1 && @all_channel > 0){
+			my $each_channel;			
+			foreach$each_channel(@all_channel){
+				&app_print("$divider_tag Now Build each channel $each_channel for $each_project project\n");
+				&change_lenovo_channel_name($each_channel);
+				&build_each_project($each_project,$product_locales,$target_arch,$each_channel);
+			}
+		}else{
+			&build_each_project($each_project,$product_locales,$target_arch);
+		}
+		$project_idex++;
+	}
+
+	#cp AndroidManifest.xml from tm_manifest & rm tm_manifest
+	if (-d $tm_manifest)
+	{
+		qx(cp $tm_manifest/$MANIFEST $MANIFEST -rf);
+		qx(cp $tm_manifest/$NATIVE_LIB/* $NATIVE_LIB/ -rf);
+		qx(rm $tm_manifest -rf)
+	}
+
+	if (-d $out_temp_dir)
+	{
+		qx(rm -rf $out_temp_dir)
+	}
+
+	my $end_time = time;
+	my $use_time = $end_time - $begin_time;
+	my $second = $use_time % 60;
+	my $minute = int($use_time / 60);
+	my $use_time_str;
+	if ($minute > 0){
+		$use_time_str = $minute."Minute".$second."Second";
+	}
+	else{
+		$use_time_str = $second."S";
+	}
+
+	#check value
+	if ($cmd_value == 0){
+		print "$divider_tag Use script buildapp,Build Success.Time:$use_time_str!\n";    
+	}
+	else
+	{
+		&handle_after_compare_dpi();
+		print "$divider_tag Use script buildapp,Build Failed,Pls check your log.Time:$use_time_str!\n";       
+	}
+	
+	$cmd_value;
+}
+
+sub handler_channel_info(){
+	my $need_channel=0;
+	my ($project) = @_;
+	my $channel_project;
+	foreach $channel_project(@channel_project_list){
+		if ($channel_project eq $project){
+			$need_channel=1;
+			last;
+		}
+	}
+	$need_channel;
+}
+
+sub handler_overlay_res(){
+		my ($project) = @_;
+		&app_print("$divider_tag handler_overlay_res is $project\n");
+
+		if (-e "$tm_manifest/$MANIFEST")
+		{
+			qx(cp $tm_manifest/$MANIFEST $MANIFEST -r);
+		}
+
+		#1st,overlay $RES,$static_lib,$dynamic_lib.
+		$overlay_res="";
+		my @overlay_list;
+		if (-d "$OVERLAY/$project"){
+			@overlay_list=qx(ls $OVERLAY/$project);
+		}
+		if (@overlay_list > 0){
+			&app_print("$project has overlay list @overlay_list\n");
+			if (-e "$OVERLAY/$project/$MANIFEST"){
+				&app_print("$project has overlay $OVERLAY/$project/$MANIFEST\n");
+				qx(cp $OVERLAY/$project/$MANIFEST ./ -r);
+			}
+
+			if (-d "$OVERLAY/$project/$RES")
+			{
+				&app_print("$project has overlay resource\n");
+				if (-d $RES)
+				{        
+				    #qx(rm -fr $RES);
+					$overlay_res="-S $OVERLAY/$project/$RES";
+				}
+				#qx(cp $OVERLAY/$project/$RES . -r);
+			}
+
+			#add assests			
+			if (-d "$OVERLAY/$project/$ASSETS")
+			{
+				&app_print("$project has overlay $ASSETS\n");
+				qx(cp $OVERLAY/$project/$ASSETS . -r);
+			}
+
+			if (-d "$OVERLAY/$project/$static_lib")
+			{
+				&app_print("$project has overlay $static_lib\n");
+				if (-d $static_lib)
+				{        
+					qx(rm -fr $static_lib);
+				}
+				qx(cp $OVERLAY/$project/$static_lib . -r);
+			}
+
+			if (-d "$OVERLAY/$project/$dynamic_lib")
+			{
+				&app_print("$project has overlay $dynamic_lib\n");
+				if (-d $dynamic_lib)
+				{        
+					qx(rm -fr $dynamic_lib);
+				}
+				qx(cp $OVERLAY/$project/$dynamic_lib . -r);
+			}
+		}else
+		{
+			&app_print("$project has not overlay list\n");
+		}
+	
+		if ($package_name eq "com.lenovo.scg"){
+			my @projectList=split(/\_/,$project);
+			if (@projectList > 2){
+				my $str_for_scg_config = "cp config/$projectList[1]/$projectList[2]/* res/values/ -r";
+				&app_print("$str_for_scg_config\n");
+				system($str_for_scg_config);
+			}else{
+				&app_print("scg -sp mustbe fhd_pro_sus\n");
+			}
+		}
+}
+
+sub build_each_project()
+{
+		my ($project,$product_locales,$each_arch,$each_channel) = @_;
+		&app_print("$divider_tag Begin build_each_project is $project\n");
+		&app_print("product_locales=$product_locales\n");
+		
+		#overlay
+		&handler_overlay_res($project);
+		
+		if (defined($each_channel)){
+			&app_print("build channel is $each_channel\n");
+		}
+		&handle_compare_dpi($product_locales, $project);
+
+		my $network_config = 1;
+		if (@project_network_list > 0){
+			$network_config = $project_network_list[$project_idex];
+			if (!defined($network_config))
+			{
+				$network_config = 1;
+			}
+			&app_print("network_config=$network_config\n");
+		}
+		&handlerSupportNetwork($network_config);
+	
+		#auto modify,add weak to versionName.
+		my $bAuto = &getIsAutoBuild();
+		&app_print("bAuto=$bAuto\n");
+		if ($bAuto == 1){
+			$APK_NAME=&auto_add_buildnum_for_version($project);
+			&change_sus_project_name($project);
+		}
+
+		if (-d $BIN)
+		{
+			qx(rm -fr $BIN);
+		}
+		qx(mkdir $BIN);
+		
+		if (-d $GEN)
+		{
+			qx(rm -fr $GEN);
+		}
+		#生成R.java,必须要存在GEN目录
+		qx(mkdir $GEN);
+
+		#R.java
+		my $gen_r_cmd;
+		my $gen_r_lib_cmd;
+		my $res_lib_project="";
+		&app_print("$divider_tag Generating R.java for project to dir $GEN (using aapt) ...\n");
+		my $lib_project="";
+		my $all_lib_package="--extra-packages ";
+		if ($bLibProject){
+			foreach $lib_project (@lib_project_list){
+				chomp($lib_project);
+				$res_lib_project.=" -S $lib_project/$RES";
+				my $lib_pack_name=&getPkgNameFromManifest($lib_project);
+				$all_lib_package.=":$lib_pack_name";
+			}
+
+			$gen_r_cmd="$AAPT package -f -m -J $GEN $overlay_res -S $RES".$res_lib_project." -I $ANDRROID_SDK -M $MANIFEST --auto-add-overlay $all_lib_package";
+			&app_print("$gen_r_cmd\n");
+			$cmd_value+=system("$gen_r_cmd");
+		}else{
+			$gen_r_cmd = "$AAPT package -f -m -J $GEN $overlay_res -S $RES -I $ANDRROID_SDK -M $MANIFEST";
+			&app_print("$gen_r_cmd\n");
+			$cmd_value+=system("$gen_r_cmd");
+		}
+		&check_cmd_value();
+
+		#find R.java
+		my $r_java_path=qx(find $GEN -name R.java);
+
+		#generate BuildConfig.java
+		my $build_config_path="";
+		my @each_string=split(/\./,$package_name);
+		my $each_str;
+		foreach $each_str (@each_string){
+			if ($build_config_path ne ""){
+				$build_config_path="$build_config_path/$each_str";	
+			}else{
+				$build_config_path="$GEN/$each_str";
+			}
+		}
+		
+		$build_config_path="$build_config_path/BuildConfig.java";
+		&app_print("$divider_tag Generating $build_config_path for project ...\n");
+		qx(echo "/** Automatically generated file. DO NOT MODIFY */">>$build_config_path);
+		qx(echo "package $package_name;\n">>$build_config_path);
+		qx(echo "public final class BuildConfig {">>$build_config_path);
+		qx(echo "	public final static boolean DEBUG = true;">>$build_config_path);    
+	   	qx(echo "}">>$build_config_path);
+	
+		#generate LenovoAppFeature.java
+		if (-d "src/com/lenovo/appfeature")
+		{   
+		    if (-e $lenovoAppFeature_path)
+		    {
+		        qx(rm -fr src/com/lenovo/appfeature/LenovoAppFeature.java);
+		    }
+		}
+		else
+		{
+		    qx(mkdir src/com/lenovo/appfeature -p);
+		}
+		&app_print("$divider_tag Generate LenovoAppFeature.java\n");
+		qx(echo "/** Automatically generated file. DO NOT MODIFY */">>src/com/lenovo/appfeature/LenovoAppFeature.java);
+		qx(echo "package com.lenovo.appfeature;\n">>src/com/lenovo/appfeature/LenovoAppFeature.java);
+		qx(echo "public class LenovoAppFeature {">>src/com/lenovo/appfeature/LenovoAppFeature.java);
+		qx(echo '	public static String mProject="$project";'>>src/com/lenovo/appfeature/LenovoAppFeature.java);    
+		qx(echo "}">>src/com/lenovo/appfeature/LenovoAppFeature.java);
+
+		#Generates java classes from .aidl files.
+		my @all_aidl=qx(find $SRC -name *.aidl);
+		my $each_aidl;
+		foreach $each_aidl (@all_aidl)
+		{
+			chomp($each_aidl);#$each_aidl=~s/\n$//;
+			if ($each_aidl=~/^src(\S*).aidl$/)
+			{
+				my $out_aidl_java="gen".$1.".java";
+				my $temp="$aidl -I$SRC -p$framework_aidl $each_aidl $out_aidl_java";
+				&app_print("$temp\n");
+				$cmd_value+=system($temp);
+				&check_cmd_value();
+			}
+		}
+
+		#find all *.java
+		my %count_dir;
+		#&app_print("all java src dir are @bin_src \n");		
+		@bin_src = grep { ++$count_dir{$_} < 2 } @bin_src; 
+		&app_print("all java src dir are @bin_src \n");
+		my @all_java_src_temp=qx(find @bin_src -name *.java);
+		my @all_java_src=();
+		my $each;
+		foreach $each (@all_java_src_temp)
+		{
+			$each=~s/\n$//;
+			push(@all_java_src,$each);
+		}
+
+		my @java_src_lib_path;
+		if ($bLibProject){
+			foreach (@lib_project_list){
+				push(@java_src_lib_path,$_);
+				#copy lib project/lib to lib
+				if (-d "$_/$static_lib"){
+					unless (-d $static_lib)
+					{
+						qx(mkdir $static_lib);
+					}
+					qx(cp $_/$static_lib/* $static_lib -r);
+				}
+			}
+			my @all_java_src_lib=qx(find @java_src_lib_path -name *.java);
+			foreach (@all_java_src_lib)
+			{
+				chomp($_);
+				push(@all_java_src,$_);
+			}
+		}
+		#####to double java file.
+		my %count;
+		@all_java_src = grep { ++$count{$_} < 2 } @all_java_src; 
+		#&app_print("all java are @all_java_src \n");
+	
+	 	#find all static jar libary.
+		my $class_path=$ANDRROID_SDK;
+		my @all_external_lib=();
+		if (@order_libs > 0){
+			&app_print("all order lib are @order_libs");
+			foreach (@order_libs)
+			{
+				chomp($_);
+				$class_path=$_.":".$class_path;
+			}
+		}
+		if(-d $static_lib)
+		{
+			@all_external_lib=qx(find $static_lib -name *.jar);
+			&app_print("all external lib are @all_external_lib");
+			my $each_jar;
+			foreach $each_jar (@all_external_lib)
+			{
+				$each_jar=~s/\n$//;
+				$class_path=$class_path.":".$each_jar;
+			}
+		}
+		&app_print("-classpath=$class_path\n");
+
+		#use javac, build *.java to *.class
+		my $javac_object;
+		&app_print("$divider_tag Generating java class files (include R.java, *.java and dir $dynamic_lib, $static_lib) ...\n");
+		unless (-d "$BIN_CLASS_PATH"){
+			qx(mkdir -p $BIN_CLASS_PATH);
+		}
+		for my$each_libs_jar(@all_external_lib){
+			my $unzip_lib_jar="unzip -qo $each_libs_jar -d $BIN_CLASS_PATH";
+			&app_print("$unzip_lib_jar\n");
+			system($unzip_lib_jar);
+		}
+		#system("ls -l $BIN_CLASS_PATH");
+		qx(rm -rf $BIN_CLASS_PATH/META-INF);
+		#system("ls -l $BIN_CLASS_PATH");
+
+		if ($my_framework_jar)
+		{
+				if ($second_framework_jar){
+					$javac_object="$JAVAC -encoding UTF-8 -target 1.6 -g -sourcepath $SRC -bootclasspath $my_framework_jar -bootclasspath $second_framework_jar -extdirs $dynamic_lib -classpath \"$class_path\" -d $BIN_CLASS_PATH @all_java_src";
+				}else{
+					$javac_object="$JAVAC -encoding UTF-8 -target 1.6 -g -sourcepath $SRC -bootclasspath $my_framework_jar -extdirs $dynamic_lib -classpath \"$class_path\" -d $BIN_CLASS_PATH @all_java_src";
+				}
+		}
+		else
+		{
+			&app_print("my_framework_jar do not set.\n");
+				$javac_object="$JAVAC -encoding UTF-8 -target 1.6 -g -sourcepath $SRC -extdirs $dynamic_lib -classpath \"$class_path\" -d $BIN_CLASS_PATH @all_java_src";
+		}
+		&app_print($javac_object."\n");
+		$cmd_value+=system($javac_object);
+		&check_cmd_value();
+
+		#jar cvf classes.jar $BIN_CLASS_PATH
+		my $jar_cls_cmd="cd $BIN_CLASS_PATH;jar cvf ../classes.jar ./";
+		&app_print($jar_cls_cmd."\n");		
+		qx($jar_cls_cmd);
+
+		#proguard
+		if ($bProguard == 1)
+		{
+			&do_proguad();
+		}
+
+		#use aapt to generate resource.ap_
+		if (-d "$BIN/$RES_ARSC")
+		{
+			qx(rm -fr $BIN/$RES_ARSC);
+		}
+		&app_print("$divider_tag Generating $RES_ARSC (include res, assets, AndroidManifest.xml, etc.) (using aapt)  ...\n");
+		my $cmd_gen_resource;
+		my $temp_res_crunch="$BIN/$RES";
+		unless (-d "$temp_res_crunch"){
+			qx(mkdir $temp_res_crunch -p);
+		}else{
+			qx(rm $temp_res_crunch/* -f);
+		}
+		##Updates the pre-processed PNG cache
+		my $cmd_gen_resource_pre = "$AAPT crunch -v -S $RES  -C $temp_res_crunch>/dev/null";
+		&app_print("$cmd_gen_resource_pre\n");
+		#system("$cmd_gen_resource_pre");
+
+		if ($bLibProject){
+			#my $lib_project;
+			#foreach $lib_project (@lib_project_list){
+				#chomp($lib_project);
+				#$res_lib_project.=" -S $lib_project/$RES"
+			#}
+			#--no-crunch
+			$gen_r_cmd="$AAPT package -f --auto-add-overlay -c $product_locales -M $MANIFEST -A $ASSETS $overlay_res -S $temp_res_crunch -S $RES".$res_lib_project." -I $ANDRROID_SDK -F $RES_ARSC ";
+			&app_print("$gen_r_cmd\n");
+			$cmd_value+=system("$gen_r_cmd");
+		}else{
+			#--no-crunch
+			$cmd_gen_resource = "$AAPT package -f -c $product_locales -M $MANIFEST $overlay_res -S $temp_res_crunch -S $RES -A $ASSETS -I $ANDRROID_SDK -F $RES_ARSC";
+			&app_print("$cmd_gen_resource\n");
+			$cmd_value+=system("$cmd_gen_resource");
+		}
+		&check_cmd_value();
+
+		#use dx.bat to generate classes.dex
+		&app_print("$divider_tag Generating $CLASS_DEX include the third-party jars at $static_lib (use dx) ... \n");
+		my $dx_cmd;
+		my $opts_cmd = "-JXmx2048M";#-JXX:-UseGCOverheadLimit
+		if ($bProguard == 1)
+		{
+			$dx_cmd = "$DX $opts_cmd --dex --output=$CLASS_DEX $jar_proguard";
+			#$dx_cmd = "$DX $opts_cmd --dex --output=$CLASS_DEX $jar_proguard @all_external_lib";
+		}
+		else
+		{
+			$dx_cmd = "$DX $opts_cmd --dex --output=$CLASS_DEX $jar_cls";
+			#$dx_cmd = "$DX $opts_cmd --dex --output=$CLASS_DEX $BIN_CLASS_PATH @all_external_lib";
+		}
+		&app_print($dx_cmd." \n");
+		$cmd_value+=system($dx_cmd);
+		&check_cmd_value();
+
+		if ($network_config == 0){
+			&app_print("$divider_tag network_config =0,change same project add _off_network of project... \n");
+			$project = $project."_off_network";
+		}
+		if ($each_arch ne "arch_all"){
+			if ($each_arch eq "armeabi"){
+				$project = $project."_arm";
+				$APK_NAME = $APK_NAME."_arm";
+			}else{
+				$project = $project."_".$each_arch;
+				$APK_NAME = $APK_NAME."_".$each_arch;
+			}
+		}
+
+		#use apkbuilder to generate xx.apk.
+		my $apk_project_dir="$out_dir/$project";
+		if ($package_name eq "com.lenovo.scg"){
+			
+			$apk_project_dir="$out_dir/$project";
+		}
+
+		if (defined($each_channel)){
+			$apk_project_dir="$out_dir/$project/$each_channel";
+			$APK_NAME=$APK_NAME."_$each_channel";
+		}
+		&app_print("$divider_tag apk_project_dir=$apk_project_dir\n");
+
+		if (-d $apk_project_dir)
+		{
+		    &app_print("find apk at $apk_project_dir \n");
+		}
+		else
+		{
+		    qx(mkdir $apk_project_dir -p);
+		}
+
+		my $apk_build_string;
+		&app_print("$divider_tag Generating unsigned.apk ... \n");
+		my $unsigndApk = "$apk_project_dir/$APK_NAME.apk";
+		
+		if (-d $NATIVE_LIB)
+		{
+			$apk_build_string = "$APK_BUILD  $unsigndApk -v -u -z $RES_ARSC -f $CLASS_DEX -rf $SRC -nf $NATIVE_LIB";
+		}
+		else
+		{
+			$apk_build_string = "$APK_BUILD  $unsigndApk -v -u -z $RES_ARSC -f $CLASS_DEX -rf $SRC";
+		}
+
+		if($debug eq "true")
+		{
+			&app_print($apk_build_string."\n");
+			#$cmd_value+=system($apk_build_string);
+		}
+		else
+		{
+			#$cmd_value+=system("$apk_build_string>/dev/null");
+		}
+		$cmd_value+=system("$apk_build_string>/dev/null");
+		&check_cmd_value();
+
+		##### Add java resources carried to apk from static Java libraries.
+		if (-d $BIN_CLASS_PATH){
+			my @java_res_jar_flags=qx(find $BIN_CLASS_PATH -type f -a -not -name "*.class" | sed -e "s?^$BIN_CLASS_PATH/? -C $BIN_CLASS_PATH ?");
+			if (@java_res_jar_flags > 0){
+				my $cmd_res_jar_flags="jar uf $unsigndApk";
+				for my$each_tag(@java_res_jar_flags){
+					chomp($each_tag);
+					$cmd_res_jar_flags=$cmd_res_jar_flags."$each_tag";
+				}
+				&app_print("$divider_tag Add java resources carried to apk from static Java libraries.\n$cmd_res_jar_flags.. \n");	
+				system($cmd_res_jar_flags);
+			}
+		}
+
+		if ($bAuto == 1){
+			&app_print("$divider_tag Autobuild don't signed apk... \n");
+		}else{	
+			if (-e $sign_jar){
+				&app_print("$divider_tag Signing the unsigned apk use $use_key key to unzipalign project Signed apk ... \n");
+				unless (-d "$apk_project_dir/$projet_key_out")
+				{
+						qx(mkdir $apk_project_dir/$projet_key_out);	
+				}
+				my $unzipalignApk = "$apk_project_dir/$projet_key_out/$APK_NAME"."_unzipalign_projectSigned.apk";
+				my $zipalignApk = "$apk_project_dir/$projet_key_out/$APK_NAME.apk";
+				my $sign_key_pem = "$key_path/$use_key\.x509\.pem";
+				my $sign_key_pk = "$key_path/$use_key\.pk8";
+		
+				if (-e $sign_key_pem && -e $sign_key_pk){
+					my $sign_cmd = "java -jar $sign_jar $sign_key_pem $sign_key_pk $unsigndApk $unzipalignApk";
+					&app_print("$sign_cmd\n");
+					system($sign_cmd);
+				}else{
+					&app_print("Pls check $sign_key_pem or $sign_key_pk\n");
+				}
+		
+				if (-e $unzipalignApk){
+					&app_print("$divider_tag zipalign the project key signed apk to final apk ... \n");
+					my $zipalignStr = "$zipalign -v 4 $unzipalignApk $zipalignApk";
+					&app_print("$zipalignStr\n");
+					$cmd_value+=system("$zipalignStr>/dev/null");
+					#&check_cmd_value();
+					system("rm $unzipalignApk");
+				}
+			}
+
+			#use $key_name to sign.
+			if ($sign_java_key eq "true"){
+				&app_print("$divider_tag Signing the unsigned apk use java key of $key_name to unzipalign java Signed apk ... \n");
+				unless (-e $key_name){
+				   system("$KeyTool -genkey -v -keystore $key_name -storepass $apk_key -keypass $apk_key -alias cert -dname CN=sagely,OU=atr,O=szu,L=sz,ST=gd,C=cn -keyalg RSA -validity 10000");
+				} 
+
+				unless (-d "$apk_project_dir/$java_key_out"){
+					qx(mkdir $apk_project_dir/$java_key_out);	
+				}
+				my $unzipalignApk = "$apk_project_dir/$java_key_out/$APK_NAME"."_unzipalign_javaSigned.apk";
+				my $zipalignApk = "$apk_project_dir/$java_key_out/$APK_NAME.apk";
+				my $java_sign_cmd = "$Jarsigner -verbose -keystore $key_name -keypass $apk_key -storepass $apk_key -signedjar $unzipalignApk $unsigndApk cert>/dev/null";
+				&app_print("$java_sign_cmd\n");
+				system($java_sign_cmd);
+			
+				if (-e $unzipalignApk){
+					&app_print("$divider_tag zipalign the java key signed apk to final apk ... \n");
+					my $zipalignStr = "$zipalign -v 4 $unzipalignApk $zipalignApk";
+					&app_print("$zipalignStr\n");
+					$cmd_value+=system("$zipalignStr>/dev/null");
+					#&check_cmd_value();
+					system("rm $unzipalignApk");
+				}
+			}
+		}
+
+		#backup $BIN/ and restore $MANIFEST
+		qx(mkdir $apk_project_dir/bin/ -p);
+		qx(cp $BIN/* $apk_project_dir/bin/ -rf);
+		qx(cp $MANIFEST $apk_project_dir/bin/ -rf);
+		if ($each_arch ne "arch_all"){
+			#qx(mkdir $apk_project_dir/$NATIVE_LIB/$each_arch/ -p);
+			#qx(cp $NATIVE_LIB/$each_arch/* $apk_project_dir/$NATIVE_LIB/$each_arch/ -rf);
+		}
+
+		if ($package_name eq "com.lenovo.scg"){
+			qx(mkdir $apk_project_dir/SuperCameraGallery/lib/ -p);
+			qx(mkdir $apk_project_dir/SuperCameraGallery/apps/ -p);
+			qx(echo 'include \$(call all-subdir-makefiles)'>>$apk_project_dir/SuperCameraGallery/Android.mk);
+
+			qx(cp $NATIVE_LIB/$each_arch/* $apk_project_dir/SuperCameraGallery/lib/ -rf);
+			qx(cp $unsigndApk $apk_project_dir/SuperCameraGallery/apps/ -rf);
+
+			my $apps_mk = "$apk_project_dir/SuperCameraGallery/apps/Android.mk";
+					
+			qx(echo "#TODO: write a build template file to do this, and/or fold into multi_prebuilt.\n">>$apps_mk);
+			qx(echo 'LOCAL_PATH := \$(my-dir)'>>$apps_mk);
+			qx(echo "###############################################################################">>$apps_mk);
+			qx(echo 'include \$(CLEAR_VARS)'>>$apps_mk);
+			qx(echo "\nLOCAL_MODULE := $APK_NAME">>$apps_mk);
+			qx(echo 'LOCAL_MODULE_TAGS := optional'>>$apps_mk);
+			qx(echo 'LOCAL_SRC_FILES := \$(LOCAL_MODULE).apk'>>$apps_mk);
+			qx(echo 'LOCAL_MODULE_CLASS := APPS'>>$apps_mk);
+			qx(echo 'LOCAL_OVERRIDES_PACKAGES := Gallery2'>>$apps_mk);
+			qx(echo 'LOCAL_MODULE_SUFFIX := \$(COMMON_ANDROID_PACKAGE_SUFFIX)'>>$apps_mk);
+			qx(echo "LOCAL_CERTIFICATE := platform\n">>$apps_mk);
+			qx(echo 'include \$(BUILD_PREBUILT)'>>$apps_mk);
+			qx(echo "###############################################################################">>$apps_mk);
+			
+			my $lib_mk = "$apk_project_dir/SuperCameraGallery/lib/Android.mk";
+
+			qx(echo 'LOCAL_PATH := \$(call my-dir)'>>$lib_mk);
+			qx(echo '\$(shell mkdir -p \$(PRODUCT_OUT)/system)'>>$lib_mk);
+			qx(echo '\$(shell mkdir -p \$(PRODUCT_OUT)/system/lib)'>>$lib_mk);
+			qx(echo '\$(shell mkdir -p \$(PRODUCT_OUT)/system/etc)'>>$lib_mk);
+			qx(echo '\$(shell cp -r \$(LOCAL_PATH)/*.so \$(PRODUCT_OUT)/system/lib/)'>>$lib_mk);	
+			qx(echo '\$(shell cp -r \$(LOCAL_PATH)/../scg_config.xml \$(PRODUCT_OUT)/system/etc/)'>>$lib_mk);
+
+			##
+			qx(cd $apk_project_dir;7z a $project.7z SuperCameraGallery/*);
+
+			#my @projectList=split(/\_/,$project);
+			#if (@projectList > 2){
+				#my $dpi = "$projectList[0]";
+				#if ($dpi eq "hd"){
+					#qx(sh res_ex/dpi_ln_delete.sh xhdpi);
+				#}elsif ($dpi eq "hdpi"){
+					qx(sh res_ex/dpi_ln_delete.sh hdpi);
+					qx(sh res_ex/dpi_ln_delete.sh xhdpi);
+				#}
+			#}
+		}
+		
+		if (-d $BIN)
+		{
+			#qx(rm -fr $BIN);
+		}
+
+		#mv tm_res_dir to res
+		&handle_after_compare_dpi();
+
+		&app_print("$divider_tag End build_each_project is $project\n");	
+		#&app_print("-!-!-!-!-!-!-!-!-!-!-!-!-!-!-!-!-!-!-!-!-!-!-!-!-!-!-!-!\n");
+	}
+
+sub check_cmd_value{
+	if ($cmd_value > 0)
+	{
+		if (-d $BIN)
+		{
+			qx(rm -fr $BIN);
+		}
+		#cp AndroidManifest.xml from tm_manifest & rm tm_manifest
+		if (-d $tm_manifest)
+		{
+			qx(cp $tm_manifest/$MANIFEST $MANIFEST -r);
+			qx(rm $tm_manifest -rf)
+		}
+
+		&handle_after_compare_dpi();
+
+		print "Build Failed,Pls check your log.cmd_value=$cmd_value;\n";       
+		(exit 255) if ($cmd_value >= 255);
+		exit $cmd_value;
+	}
+}
+
+sub app_print
+{
+    if($debug eq "true")
+    {	
+		if ($def_debug == 0)
+        {
+			$def_debug=1;
+		}
+        print @_;
+    }
+    else
+    {   
+        if ($def_debug == 0)
+        {
+            print "Pls set -debug=true or -d=true if you need print info!\n";
+			$def_debug=1;
+        }
+    }
+}
+
+sub do_proguad
+{
+	&app_print("$divider_tag Now proguarding... \n");
+	unless (-d $out_temp_dir)
+	{
+		qx(mkdir $out_temp_dir);
+	}
+	else
+	{
+		qx(rm -rf $out_temp_dir/*)
+	}
+	
+	unless (-d "$BIN/proguard")
+	{
+		qx(mkdir "$BIN/proguard");
+	}
+
+	#system("cd $BIN_CLASS_PATH;zip ../$jar_bin ./* -r>/dev/null");
+	
+	#auto add ignore android.jar
+	my @find_num = qx(grep "$ANDRROID_SDK" $proguard_config -r);
+	if (@find_num == 0){
+		qx(echo "\n#Automatically generated file for proguard. DO NOT MODIFY!**" >> $proguard_config);
+		&app_print("Auto echo -libraryjars $ANDRROID_SDK >> $proguard_config\n");
+		qx(echo "-libraryjars $ANDRROID_SDK" >> $proguard_config);
+	}
+
+	#auto add ignore android-support-v4.jar
+	my @find_num_1 = qx(grep android\.support\.v4 $proguard_config -r);
+	if (@find_num_1 == 0){
+		&app_print("Auto echo ignore android-support-v4.jar >> $proguard_config\n");
+		if (-e "libs/android-support-v4.jar"){
+			qx(echo "-libraryjars libs/android-support-v4.jar" >> $proguard_config);
+		}
+		if (-e "libs/android-support-v13.jar"){
+			qx(echo "-libraryjars libs/android-support-v13.jar" >> $proguard_config);
+		}
+		qx(echo "-dontwarn android.support.v4.**" >> $proguard_config);
+		qx(echo "-keep class android.support.v4.** { *; }">> $proguard_config);
+		qx(echo "-keep interface android.support.v4.app.** { *; }">> $proguard_config);
+		qx(echo "-keep public class * extends android.support.v4.**">> $proguard_config);
+
+		qx(echo "-dontwarn android.support.v13.**" >> $proguard_config);
+		qx(echo "-keep class android.support.v13.** { *; }">> $proguard_config);
+		qx(echo "-keep interface android.support.v4.app.** { *; }">> $proguard_config);
+		qx(echo "-keep public class * extends android.support.v13.**">> $proguard_config);
+
+		qx(echo "-keep public class * extends android.app.Fragment">> $proguard_config);
+	}
+
+	####Add /home/username/proguard/proguard.flags
+	my $user=qx(env|grep USER);###等到了用户名,譬如为USER=wangxjn
+	my $username;
+	if ($user=~/^USER=(\S+)/)#得到具体用户名wangxjn
+	{
+		$username=$1;
+	}
+	
+	unless(-d "/home/$username/buildscript"){
+		print "/home/$username/buildscript\n";
+		qx(cd /home/$username;git clone sma:tools/abapp/buildscript);
+	}else{
+		qx(cd /home/$username/buildscript;git pull);
+	}
+
+	my $proguard_cmd = "java -jar $proguard_jar -injars $jar_cls -outjars $jar_proguard -dump $BIN/proguard/dump.txt  -printseeds $BIN/proguard/seeds.txt -printusage $BIN/proguard/usage.txt -printmapping $BIN/proguard/mapping.txt -include $proguard_config";
+	if (-e "/home/$username/buildscript/proguard/proguard.flags"){
+		$proguard_cmd=$proguard_cmd." -include /home/$username/buildscript/proguard/proguard.flags";
+	}
+	&app_print("$proguard_cmd\n");
+
+	$cmd_value+=system($proguard_cmd);
+	&check_cmd_value();
+}
+
+sub getPkgNameFromManifest(){
+	my ($my_path) = @_;
+	if (!defined($my_path))
+	{
+		$my_path=".";
+	}
+
+	my $parser = XML::LibXML->new();
+	my $xmldoc = $parser->parse_file("$my_path/$MANIFEST");
+	my $root = $xmldoc->documentElement();
+	my($packagename) = $root->getAttribute("package");
+	my($vername) = $root->getAttribute("android:versionCode");
+	my($vercode) = $root->getAttribute("android:versionName");
+
+	print "Final package_name=$packagename\n";
+	$packagename;
+}
+
+sub handle_packageName(){
+	my ($my_path) = @_;
+	if (!defined($my_path))
+	{
+		$my_path=".";
+	}
+	my $pack_name;
+
+		
+	my @package_list = qx(grep "package=" $my_path/$MANIFEST | cut -d'=' -f2);
+	$pack_name = $package_list[0];
+	chomp($pack_name);
+	if ($pack_name =~/(\S+)\n/){
+		$pack_name=$1;
+	}
+	$pack_name=~s/\r$//;#去除\r
+	$pack_name=~s/\s*$//;#去除空格
+	$pack_name=~s/\r$//;#去除\r
+	$pack_name=~s/>$//;#去除>
+	$pack_name=~s/\s*$//;#去除空格
+	$pack_name=~s/\"$//;
+	$pack_name=~s/^\"//;
+
+	&app_print("Final package_name=$pack_name\n");
+	$pack_name;
+}
+
+sub auto_add_buildnum_for_version(){
+	my $max_num = 10000;
+
+	my ($each_project) = @_;
+	&app_print("$divider_tag auto_add_buildnum_for_version for $each_project project\n");
+
+	#how to find.
+	#git log --graph --all -l --pretty=oneline |grep 095b5
+	my $git_head=qx(git log -l -1 --pretty=oneline|cut -c1-7);
+	if ($git_head eq ""){
+		$git_head="0000000";
+	}
+	chomp($git_head);
+	my $time=strftime("%m%d", localtime(time));#%H%M%S
+	my $weak=strftime("%W", localtime(time()));
+	my $year=strftime("%Y", localtime(time())); 
+	$year=substr($year, 2,3);
+
+	&app_print("Autobuild buildnum is $build_num\n");
+	my $parser = XML::LibXML->new();
+	my $xmldoc = $parser->parse_file($MANIFEST);
+	my $root = $xmldoc->documentElement();
+
+	my($versionName) = $root->getAttribute("android:versionName");
+	my $oldverName = $versionName;
+	&app_print("oldverName=$versionName\n");
+
+	my @versionList=split(/\./,$versionName);
+	my $ver_len = @versionList;
+	my $remainder;
+	my $quotient;
+	my $versionName_num;
+	if 	($ver_len == 1){
+		$versionList[0] +=$build_num;
+		$versionName_num=$versionList[0]."\.".$time."\.".$git_head;
+	}elsif ($ver_len == 2){
+		$versionList[1] +=$build_num;
+		$remainder = $versionList[1] % $max_num;
+		$quotient = int($versionList[1] / $max_num);
+		$versionList[0] +=$quotient;
+		$versionName_num=$versionList[0]."\.".$remainder."\.".$time."\.".$git_head;
+	}elsif ($ver_len >= 3){
+		if ($versionList[2]=~/^(\d+)/)
+		{
+			$versionList[2]=$1;
+		}else{
+			&app_print("!!!Attation,versionName 3rd postion don't start with number\n");
+			$versionList[2]=0;
+		}
+		
+		my $origin_build_num;
+		if ($package_name ne "com.lenovo.scg"){
+			$origin_build_num=$versionList[2];
+		}else{
+			$origin_build_num=$versionList[3];
+		}
+		$origin_build_num +=$build_num;
+		$remainder = $origin_build_num % $max_num;
+		$quotient = int($origin_build_num / $max_num);
+		$versionList[1] +=$quotient;
+		$versionList[0]/=1;#change 01 to 1.
+		
+		my $full_time = $year.$time;
+		if ($package_name ne "com.lenovo.scg"){
+			$versionName_num=$versionList[0]."\.".$versionList[1]."\.".$remainder."\.".$full_time."\.".$git_head;
+		}else{
+			$versionName_num=$versionList[0]."\.".$versionList[1]."\.".$versionList[2]."\.".$remainder."\.".$full_time."\.".$git_head;
+		}
+	}
+	
+	my $git_branch_name = qx(git branch | sed -n '/\* /s///p');
+	chomp($git_branch_name);
+	&app_print("Current git branch = $git_branch_name\n");
+	my $suffix_branch_name = "";
+	if ($git_branch_name=~/RTM/i){
+		#$suffix_branch_name = "RTM";
+		&app_print("Now suffix name change to $suffix_branch_name\n");
+	}
+
+	#$versionName_num = $versionName_num."_".$suffix_branch_name";
+	if ($suffix_project == 0){
+		$versionName=$versionName_num;
+		if ($package_name ne "com.lenovo.scg"){
+			$APK_NAME=$APK_NAME_ORIGN."_v".$versionName_num;
+		}
+	}
+	else{
+		$versionName=$versionName_num."_".$each_project;
+		if ($package_name ne "com.lenovo.scg"){
+			$APK_NAME=$APK_NAME_ORIGN."_v".$versionName_num."_$each_project";
+		}else{
+			$APK_NAME=$APK_NAME_ORIGN;
+		}
+	}
+	&app_print("Autobuild handle versionName=$versionName\n");
+	#$versionName_num = $versionName_num."_".$suffix_branch_name";
+	if ($git_branch_name=~/master/i){
+		$suffix_branch_name = "Beta";
+		$versionName=$versionName."(Beta)";
+		#encode("gbk", decode("utf-8", $versionName));
+		&app_print("Now suffix name change to $suffix_branch_name\n");
+	}
+	#qx(LANG=zh_CN.gb2312);
+	system("sed -i 's/android:versionName\\s*=\\s*\"$oldverName\"/android:versionName=\"$versionName\"/' $MANIFEST");
+
+	my($versionCode) = $root->getAttribute("android:versionCode");
+	my $oldverCode = $versionCode;
+	&app_print("oldverCode=$versionCode\n");
+	$versionCode+=$build_num;
+	if ($package_name eq "com.lenovo.scg"){
+		if ($versionList[2] == 0){
+			$versionCode = "99".$year.$time;
+		}else{
+			$versionCode = $versionList[2].$year.$time;
+		}
+	}
+	&app_print("Autobuild handle versionCode=$versionCode\n");
+	qx(sed -i 's/android:versionCode\\s*=\\s*\"$oldverCode\"/android:versionCode=\"$versionCode\"/' $MANIFEST);
+
+	&app_print("Autobuild handle APK_NAME=$APK_NAME\n");
+	$APK_NAME;
+}
+
+sub change_sus_project_name(){
+	my ($each_project) = @_;
+	qx(sed -i 's/android:name=\"Lenovo_\\(\\S*\\)\"\\s*android:value=\"\\(\\S*\\)\"/android:name=\"Lenovo_$each_project\" android:value=\"$each_project\"/' $MANIFEST);
+	qx(sed -i 's/android:name=\"SUS_CHANNEL\"\\sandroid:value=\"\\(\\S*\\)\"/android:name=\"SUS_CHANNEL\" android:value=\"$each_project\"/' $MANIFEST);
+
+	qx(sed -i ':a;N;\$!ba;s/android:name=\"Lenovo_\\(\\S*\\)\"\\([^<]*\\n\\)*[^<]*android:value=\"\\(\\S*\\)\"/android:name=\"Lenovo_$each_project\" android:value=\"$each_project\"/' $MANIFEST);
+	qx(sed -i ':a;N;\$!ba;s/android:name=\"SUS_CHANNEL\"\\([^<]*\\n\\)*[^<]*android:value=\"\\(\\S*\\)\"/android:name=\"SUS_CHANNEL\" android:value=\"$each_project\"/' $MANIFEST);
+
+	qx(sed -i ':a;N;\$!ba;s/android:value=\"\\(\\S*\\)\"\\([^<]*\\n\\)*[^<]*android:name=\"Lenovo_\\(\\S*\\)\"/android:name=\"Lenovo_$each_project\" android:value=\"$each_project\"/' $MANIFEST);
+	qx(sed -i ':a;N;\$!ba;s/android:value=\"\\(\\S*\\)\"\\([^<]*\\n\\)*[^<]*android:name=\"SUS_CHANNEL\"/android:name=\"SUS_CHANNEL\" android:value=\"$each_project\"/' $MANIFEST);
+
+# 	sed -i ':a;N;$!ba;s/\(aaa\)\([^<]*\n\)*[^<]*\(bbb\)/\1 ccc \3/' test
+#	sed -i 's/android:name="Lenovo_\(\S*\)"\sandroid:value="\(\S*\)"/android:name="Lenovo_1ee" android:value="x1x"/' AndroidManifest.xml
+}
+
+sub change_lenovo_channel_name(){
+	my ($each_channel) = @_;
+	qx(sed -i ':a;N;\$!ba;s/android:name=\"lenovo:channel\"\\([^<]*\\n\\)*[^<]*android:value=\"\\(\\S*\\)\"/android:name=\"lenovo:channel\" android:value=\"$each_channel\"/' $MANIFEST);
+	qx(sed -i ':a;N;\$!ba;s/android:value=\"\\(\\S*\\)\"\\([^<]*\\n\\)*[^<]*android:name=\"lenovo:channel\"/android:name=\"lenovo:channel\" android:value=\"$each_channel\"/' $MANIFEST);
+
+	qx(sed -i 's/android:name=\"lenovo:channel\"\\s*android:value=\"\\(\\S*\\)\"/android:name=\"lenovo:channel\" android:value=\"$each_channel\"/' $MANIFEST);
+	qx(sed -i 's/android:value=\"\\(\\S*\\)\"\\s*android:name=\"lenovo:channel\"/android:name=\"lenovo:channel\" android:value=\"$each_channel\"/' $MANIFEST);
+}
+
+#mv tm_res_dir to res
+sub handle_after_compare_dpi{
+	if (-d $tm_res_dir)
+	{
+		qx(cp $tm_res_dir/* . -r);
+		qx(rm $tm_res_dir -rf)
+	}
+}
+
+sub handle_compare_dpi{
+	my ($product_locales, $project) = @_;
+	my @each_string=split(/\,/,$product_locales);
+	my $str;
+	my $origin_dpi;
+
+	&app_print("all_origin_dpi=@all_dpi_list\n");
+	foreach $origin_dpi (@all_dpi_list)
+	{
+		my $bMatch=0;
+		foreach $str (@each_string){
+			if ($str=~/(\S*)dpi$/){
+				if ($origin_dpi eq $str)
+				{
+					$bMatch=1;
+					last;
+				}
+			}
+		}
+				
+		if ($bMatch == 0){
+			&app_print("#####Don't use dpi=$origin_dpi\n");
+			my $mv_dir;
+			foreach $mv_dir (@need_handle_dpi_list)
+			{
+				my $mv_dpi_dir= "$RES/$mv_dir-$origin_dpi";
+				if (-d $mv_dpi_dir){
+					my $tm_mv_dpi_dir= "$tm_res_dir/$mv_dpi_dir";
+					unless (-d $tm_mv_dpi_dir)
+					{
+						qx(mkdir $tm_mv_dpi_dir -p);
+						qx(mv $mv_dpi_dir/* $tm_mv_dpi_dir);
+					}
+				}
+			}
+		}
+	}
+
+	if ($package_name eq "com.lenovo.scg"){
+		print "SCG link res for $project\n";
+		qx(sh res_ex/dpi_ln_create.sh hdpi);
+		qx(sh res_ex/dpi_ln_create.sh xhdpi);
+	}
+}
+
+sub getIsAutoBuild
+{
+	my $bAutoBuild=0;
+	my $hostname=qx(hostname);###得到了主机名
+	my $user=qx(env|grep USER);###等到了用户名,譬如为USER=wangxjn
+	my $username;
+
+	&app_print("getIsAutoBuild hostname=$hostname");
+    if ($hostname=~/^abapp/ || $hostname=~/^appab/)#abapp是app自动编译服务器
+    {
+		if ($user=~/^USER=(\S+)/)#得到具体用户名wangxjn
+		{
+			$username=$1;
+		}
+		&app_print("getIsAutoBuild username=$username\n");
+		if ($username eq "buildslave")#如果是buildslave
+		{
+			$bAutoBuild=1;
+		}
+	}
+	if ($cmdAutoBuild == 1)
+	{
+		$bAutoBuild=1;
+	}
+	$bAutoBuild;
+}
+
+sub handlerSupportNetwork{
+	my ($network_parm) = @_;
+	my $asset_config = "$ASSETS/config";
+	if (-e $asset_config)
+	{	
+		my $sed_pram = "sed -i 's/{\"network\":\"[0-9]*\"}/{\"network\":\"$network_parm\"}/' $asset_config";
+		print "$sed_pram\n";
+		qx($sed_pram);
+	}
+	else{
+		my $echo = "echo '{\"network\":\"$network_parm\"}' > $asset_config";
+		&app_print("$echo\n");
+		qx($echo);
+	}
+}
+
+sub handle_cmdOption(){
+	foreach (@ARGV)
+	{
+		my $network = 1;
+		my $arch_value="arch_all";
+		#-sp=K900-cn,xhdpi
+		if ($_=~/-simpleproduct\s*=\s*(\S*)-(\S*)/ || $_=~/-sp\s*=\s*(\S*)-(\S*)/ || $_=~/-sp\s*=\s*(\S*)/){
+			push(@PROJECT,$1);
+			my @parm = split(/\,/,$2);
+			my $lan = $origin_product_language_china;
+			my $dpi = $origin_product_dpi_full;
+			my $each_parm;
+			foreach $each_parm (@parm){
+				if ($each_parm  eq "cn"){
+					$lan = $origin_product_language_china;
+				}elsif($each_parm  eq "oversea"){
+					$lan = $origin_product_language_oversea;
+				}elsif($each_parm=~/\S+dpi$/){
+					$dpi=$origin_product_dpi_needadd.",".$each_parm;
+				}elsif($each_parm eq "nonet"){
+					$network = 0;
+				}elsif($each_parm eq "arch_all"){
+					$arch_value = "arch_all";
+				}elsif($each_parm eq "arm"){
+					$arch_value = "armeabi";
+				}elsif($each_parm eq "x86"){
+					$arch_value = "x86";
+				}
+			}
+			my $locales_parm = $lan.",".$dpi;
+			push(@project_locales_list,$locales_parm);
+			push(@project_network_list,$network);
+			push(@project_arch_list,$arch_value);
+		}
+		elsif ($_=~/-product\s*=\s*(\S*)-(\S*)/ || $_=~/-p\s*=\s*(\S*)-(\S*)/){
+			push(@PROJECT,$1);	
+			push(@project_locales_list,$2);
+			push(@project_network_list,$network);
+			push(@project_arch_list,$arch_value);
+		}
+		elsif ($_=~/-product\s*=\s*(\S*)/ || $_=~/-p\s*=\s*(\S*)/){
+			push(@PROJECT,$1);
+			push(@project_locales_list,$origin_product_locales);
+			push(@project_network_list,$network);
+			push(@project_arch_list,$arch_value);
+		}
+		elsif($_=~/-autobuild\s*=\s*(\S*)/ || $_=~/-a\s*=\s*(\S*)/){
+			if ($1 eq "true")
+			{
+				$cmdAutoBuild=1;
+			}
+		}
+		elsif($_=~/-debug\s*=\s*(\S*)/ || $_=~/-d\s*=\s*(\S*)/){
+			$debug = $1;			
+		}
+		elsif($_=~/-key\s*=\s*(\S*)/ || $_=~/-k\s*=\s*(\S*)/){
+			$use_key = $1;			
+		}
+		elsif($_=~/-name\s*=\s*(\S*)/ || $_=~/-n\s*=\s*(\S*)/){
+			$APK_NAME_ORIGN = $1;	
+		}
+		elsif($_=~/-sdk\s*=\s*(\d*)/ || $_=~/-s\s*=\s*(\d*)/){
+			$android_sdk_version = $1;
+			&app_print("android_sdk_version=$android_sdk_version\n");
+		}
+		elsif($_=~/-framework_name\s*=\s*(\S*)/ || $_=~/-fn\s*=\s*(\S*)/){
+			$framework_name = $1;
+		}
+		elsif($_=~/-sec_framework_name\s*=\s*(\S*)/ || $_=~/-sfn\s*=\s*(\S*)/){
+			$sec_framework_name = $1;
+		}
+		elsif($_=~/-order_lib\s*=\s*(\S*)/ || $_=~/-ol\s*=\s*(\S*)/){
+			push(@order_libs,"$static_lib/$1.jar");
+		}elsif($_=~/-sign_java_key\s*=\s*(\S*)/ || $_=~/-sjk\s*=\s*(\S*)/){
+			$sign_java_key = $1;
+		}elsif($_=~/-product_locales\s*=\s*(\S*)/ || $_=~/-pl\s*=\s*(\S*)/){
+			$product_locales = $1;
+		}elsif($_=~/-network\s*=\s*(\S*)/ || $_=~/-net\s*=\s*(\S*)/){
+			if ($1 eq "false")
+			{
+				$support_net = 0;
+			}
+		}elsif($_=~/-suffix\s*=\s*(\S*)/ || $_=~/-sf\s*=\s*(\S*)/){
+			if ($1 eq "false")
+			{
+				$suffix_project = 0;
+			}
+		}elsif($_=~/-channel\s*=\s*(\S*)/ || $_=~/-ch\s*=\s*(\S*)/){
+			#print "$divider_tag Need channel project $1\n";
+			my @need_channel_project = split(/\,/,$1);
+			chomp(@need_channel_project);
+			push(@channel_project_list,@need_channel_project);
+			$support_channel=1;
+		}elsif($_=~/-buildnum\s*=\s*(\S*)/ || $_=~/-bn\s*=\s*(\S*)/){
+			$build_num= $1;
+		}
+	}
+	if (@PROJECT == 0){
+		push(@PROJECT,$defaultProject);
+	}
+}
+
+sub getAllSrcPath{
+	if (-e ".classpath"){
+		my $parser = XML::LibXML->new();
+		my $xmldoc = $parser->parse_file(".classpath");
+		my $root = $xmldoc->documentElement();
+
+		# get all the title elements
+		my @entrys = $root->getElementsByTagName("classpathentry");
+		foreach my $t (@entrys) {
+			my($kind) = $t->getAttribute("kind");
+			if ($kind eq "src"){
+				my($path) = $t->getAttribute("path");
+				push(@bin_src,$path);
+				#print "###test kind=$kind,path=$path\n"
+			}
+		}
+	}
+}
+
+$cmd_value = &build_main();
+if ($cmd_value >= 255){
+	$cmd_value = 1;
+}
+exit $cmd_value;

@@ -1,0 +1,234 @@
+#!/usr/bin/perl
+use XML::LibXML;
+#author:wangxuejin
+#time:2013-11-5
+#Purpose:create for auto generate image&layout&anim&values for xhdpi&hdpi from xxhdpi.
+
+$auto_tmp_file_path="../autoTmpFile";
+$scg_compare_hdpi="$auto_tmp_file_path/compare_hdpi_tmp";
+$scg_compare_result="$auto_tmp_file_path/compare_result";
+
+$xxhdpi_drawable_uplist="$auto_tmp_file_path/xxhdpi_drawable_updateList.txt";
+$xxhdpi_anim_uplist="$auto_tmp_file_path/xxhdpi_anim_updateList.txt";
+$xxhdpi_layout_uplist="$auto_tmp_file_path/xxhdpi_layout_updateList.txt";
+$xxhdpi_values_uplist="$auto_tmp_file_path/xxhdpi_values_updateList.txt";
+
+$auto_save_dir = "res_ex";
+$auto_save_hdpi_dir = "$auto_save_dir/res_hdpi"; 
+$hdpi_drawable="$auto_save_hdpi_dir/drawable-hdpi";
+$hdpi_anim="$auto_save_hdpi_dir/anim-hdpi";
+$hdpi_layout_port="$auto_save_hdpi_dir/layout-port-hdpi";
+
+$auto_save_xhdpi_dir = "$auto_save_dir/res_xhdpi"; 
+$xhdpi_drawable="$auto_save_xhdpi_dir/drawable-xhdpi";
+$xhdpi_anim="$auto_save_xhdpi_dir/anim-xhdpi";
+$xhdpi_layout_port="$auto_save_xhdpi_dir/layout-port-xhdpi";
+
+$xxhdpi_drawable="res/drawable-xxhdpi";
+$xxhdpi_anim="res/anim-xxhdpi";
+$xxhdpi_layout_port="res/layout-port-xxhdpi";
+
+$hdpi_draw_white_list="WhiteList/drawable-hdpi.txt";
+$xhdpi_draw_white_list="WhiteList/drawable-xhdpi.txt";
+$hdpi_anim_white_list="WhiteList/anim-hdpi.txt";
+$xhdpi_anim_white_list="WhiteList/anim-xhdpi.txt";
+$hdpi_layout_white_list="WhiteList/layout-port-hdpi.txt";
+$xhdpi_layout_white_list="WhiteList/layout-port-xhdpi.txt";
+
+sub res_convert_dpi(){
+	my ($l_res_xxhdpi,$l_res_target,$l_res_update_list,$l_res_white_list,$l_res_dpiparam) = @_;
+	unless(-d "$l_res_target"){
+		qx(mkdir -p $l_res_target);
+	}
+	#if (-e "$l_res_update_list"){
+		#print "wxjaf $l_res_update_list\n";
+		qx(FilePartConvert $l_res_xxhdpi $l_res_target $l_res_update_list $l_res_white_list $l_res_dpiparam);
+	#}
+}
+
+sub res_commit_handle(){
+	qx(git add $auto_save_dir);
+	my $change_log="自动提交资源图片处理";
+	qx(git commit -m"$change_log");
+	my $git_branch_name = qx(git branch | sed -n '/\* /s///p');
+	chomp($git_branch_name);
+	my $push_cmd="git push origin $git_branch_name\n";
+	print $push_cmd;
+	qx($push_cmd);
+}
+
+sub read_xml_key_To_File(){
+	my ($readXmlPath,$writeKeyPath) = @_;
+	my $parser = XML::LibXML->new();
+	my $xmldoc = $parser->parse_file($readXmlPath);
+	my $root = $xmldoc->documentElement();
+	
+	open(FILES1,">>$writeKeyPath");
+	foreach my $item ($root->getChildNodes()) {
+		@attr_list=$item->getAttributes();
+		for $attr (@attr_list){
+			$name=$attr->getName();
+			$value=$attr->getValue();
+			if ($name=~/name/)
+			{
+				syswrite(FILES1,$value."\n");
+			}
+		}
+  	}
+	close(FILES1);
+}
+
+sub xml_compare_handle(){
+	$dimens_xx_xml="res/values-xxhdpi/dimens.xml";
+	$dimens_xx_value="$scg_compare_result/dimens_xxhdpi_value.txt";
+	&read_xml_key_To_File($dimens_xx_xml,$dimens_xx_value);
+
+	$dimens_x_xml="res_ex/res_xhdpi/values-xhdpi/dimens.xml";
+	$dimens_x_value="$scg_compare_result/dimens_xhdpi_value.txt";
+	&read_xml_key_To_File($dimens_x_xml,$dimens_x_value);
+
+	$dimens_xx_value_sort="$scg_compare_result/dimens_xxhdpi_value_sort.txt";
+	$dimens_x_value_sort="$scg_compare_result/dimens_xhdpi_value_sort.txt";
+	qx(sort $dimens_xx_value > $dimens_xx_value_sort);
+	qx(sort $dimens_x_value > $dimens_x_value_sort);
+
+	my $compare_cmd="comm -13 $dimens_xx_value_sort $dimens_x_value_sort > $scg_compare_result/xhdpi_dimens.txt";
+	system($compare_cmd);
+	my @list_xhdpi_extra_dimens=qx(cat $scg_compare_result/xhdpi_dimens.txt);
+	chomp(@list_xhdpi_extra_dimens);
+
+	$compare_cmd="comm -23 $dimens_xx_value_sort $dimens_x_value_sort>$scg_compare_result/xxhdpi_dimens.txt";
+	system($compare_cmd);
+	@list_xxhdpi_extra_dimens=qx(cat $scg_compare_result/xxhdpi_dimens.txt);
+	chomp(@list_xxhdpi_extra_dimens);
+
+	my $divder_prompt="#################################################################\n";
+	if (@list_xhdpi_extra_dimens > 0){	
+		print "$divder_prompt$dimens_x_xml有，但$dimens_xx_xml中的缺少的：\n@list_xhdpi_extra_dimens\n";
+	}
+
+	if (@list_xxhdpi_extra_dimens > 0){
+		print "$divder_prompt$dimens_xx_xml有，但$dimens_x_xml中的缺少的：\n@list_xxhdpi_extra_dimens\n";
+	}
+}
+
+sub res_compare_handle(){
+	#anim-xxhdpi	#drawable-xxhdpi 	#layout-port-xxhdpi 	#values-xxhdpi compare picture is same.
+	#values-xxhdpi/dimens.xml compare each item key.
+	print ">>>>> begin check dpi different\n";
+	my @xxhdpi_res_list = qx(ls res | grep "xxhdpi\$");
+	for my $each_res (@xxhdpi_res_list){
+		chomp($each_res);
+		my $xxdpi_res=$each_res;
+		my $dir_xxhdpi="res/$each_res";
+		$xxdpi_file_list="$scg_compare_hdpi/list_$each_res.txt";
+
+		$each_res=~s/xxh/xh/;
+		my $dir_xhdpi="res_ex/res_xhdpi/$each_res";
+		$xdpi_file_list="$scg_compare_hdpi/list_$each_res.txt";
+		
+		my $cmd = "ls $dir_xxhdpi | sort | tee $xxdpi_file_list";
+		qx($cmd);
+
+		$cmd = "ls $dir_xhdpi | sort | tee $xdpi_file_list";
+		qx($cmd);
+
+		my $compare_cmd="comm -13 $xxdpi_file_list $xdpi_file_list>$scg_compare_result/xhdpi_$xxdpi_res.txt";
+		system($compare_cmd);
+		@list_xhdpi_extra=qx(cat $scg_compare_result/xhdpi_$xxdpi_res.txt);
+		chomp(@list_xhdpi_extra);
+
+		$compare_cmd="comm -23 $xxdpi_file_list $xdpi_file_list>$scg_compare_result/xxhdpi_$xxdpi_res.txt";
+		system($compare_cmd);
+		@list_xxhdpi_extra=qx(cat $scg_compare_result/xxhdpi_$xxdpi_res.txt);
+		chomp(@list_xxhdpi_extra);
+
+		my $divder_prompt="#################################################################\n";
+		if (@list_xhdpi_extra > 0){	
+			print "$divder_prompt$dir_xhdpi有，但$dir_xxhdpi中的缺少的：\n@list_xhdpi_extra\n";
+		}
+
+		if (@list_xxhdpi_extra > 0){
+			print "$divder_prompt$dir_xxhdpi有，但$dir_xhdpi中的缺少的：\n@list_xxhdpi_extra\n";
+		}
+	}
+
+	&xml_compare_handle();
+	print "<<<<< end check dpi different\n";
+}
+
+
+sub main(){
+	@all_change_list = qx(git log --pretty=oneline -n 1 --raw);
+
+	if (-d "$auto_tmp_file_path"){
+		qx(rm -rf $auto_tmp_file_path/*);
+	}else{
+		qx(mkdir -p $auto_tmp_file_path);
+	}
+	qx(mkdir -p $scg_compare_hdpi);
+	qx(mkdir -p $scg_compare_result);
+
+
+	for my $item (@all_change_list){
+		#:100644 	100644 		78acd72... 		61e0b4d... 	M  		lib_project/feedback/res/layout/feedback_tab_feedback_commit.xml
+		#$1      	$2     		$3         		$4         	$5  	$6
+					#  $1      $2      $3       $4      $5  $6
+		if ($item=~/^:(\S+)\s*(\S+)\s*(\S+)\s*(\S+)\s*(\S+)\s+(\S+)/){
+			my $changeType = $5;
+			my $changeFile = $6;
+			my $divider_tag = "    ";
+			#print "param_changeType=$changeType,parm_changeFile=$changeFile\n";
+			if ($changeFile=~/^res\/drawable-xxhdpi\/(\S+)/){
+				qx(echo "$changeType$divider_tag$1">>$xxhdpi_drawable_uplist);
+			}elsif ($changeFile=~/^res\/anim-xxhdpi\/(\S+)/){
+				qx(echo "$changeType$divider_tag$1">>$xxhdpi_anim_uplist);
+			}elsif ($changeFile=~/^res\/layout-port-xxhdpi\/(\S+)/){
+				qx(echo "$changeType$divider_tag$1">>$xxhdpi_layout_uplist);
+			}elsif ($changeFile=~/^res\/values-xxhdpi\/(\S+)/){
+				qx(echo "$changeType$divider_tag$1">>$xxhdpi_values_uplist);
+			}elsif ($changeFile=~/^res\/layout\/(\S+)/){
+				#qx(echo "$changeType$divider_tag$1">>layout_uplist);
+			}
+		}
+	}
+
+	#============== dispose drawable file ===============
+	my $scale="0.66666666666666666667";
+	# drawable-xhdpi
+	&res_convert_dpi($xxhdpi_drawable,$xhdpi_drawable,$xxhdpi_drawable_uplist,$xhdpi_draw_white_list,$scale);
+	# drawable-hdpi
+	&res_convert_dpi($xxhdpi_drawable,$hdpi_drawable,$xxhdpi_drawable_uplist,$hdpi_draw_white_list,$scale);
+	
+	#============== dispose anim file ===============
+	# anim-xhdpi
+	&res_convert_dpi($xxhdpi_anim, $xhdpi_anim, $xxhdpi_anim_uplist, $xhdpi_anim_white_list, $scale);
+	# anim-hdpi
+	&res_convert_dpi($xxhdpi_anim, $hdpi_anim, $xxhdpi_anim_uplist, $hdpi_anim_white_list, $scale);
+
+	#============== dispose layout_port file ===============
+	# layout_port-xhdpi
+	&res_convert_dpi($xxhdpi_layout_port, $xhdpi_layout_port, $xxhdpi_layout_uplist, $xhdpi_layout_white_list, $scale);
+	# layout_port-hdpi
+	&res_convert_dpi($xxhdpi_layout_port, $hdpi_layout_port, $xxhdpi_layout_uplist, $hdpi_layout_white_list, $scale);
+	
+	#compare files for xxhdpi & xhdpi/hdpi,
+	&res_compare_handle();
+	
+	#============== auto commit change file ===============
+	my @change_files_info = qx(git status -z $auto_save_dir);
+	my $bChange=1;
+	for my $each_change(@change_files_info){
+		if ($each_change=~/^nothing to commit/){
+			$bChange = 0;
+			break;
+		}
+	}
+	if ($bChange == 1){
+		&res_commit_handle();
+	}else{
+		print "AutoImage handle nothing to commit\n";
+	}
+}
+
+&main();
